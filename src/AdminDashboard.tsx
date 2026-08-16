@@ -20,6 +20,12 @@ type Stop = {
   latitude: number | null;
   longitude: number | null;
 };
+type StopTime = {
+  id: number;
+  stop_id: number;
+  arrival_time: string;
+  active: boolean;
+};
 type Bus = {
   id: number;
   code: string;
@@ -69,25 +75,28 @@ export default function AdminDashboard({ profile }: { profile: Profile }) {
   const [users, setUsers] = useState<Profile[]>([]);
   const [routes, setRoutes] = useState<Route[]>([]);
   const [stops, setStops] = useState<Stop[]>([]);
+  const [stopTimes, setStopTimes] = useState<StopTime[]>([]);
   const [buses, setBuses] = useState<Bus[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [selected, setSelected] = useState<Profile | null>(null);
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [msg, setMsg] = useState("");
   async function load() {
-    const [u, r, s, b, t] = await Promise.all([
+    const [u, r, s, st, b, t] = await Promise.all([
       supabase
         .from("user_directory")
         .select("*")
         .order("id", { ascending: false }),
       supabase.from("transport_routes").select("*").order("name"),
       supabase.from("bus_stops").select("*").order("stop_order"),
+      supabase.from("stop_times").select("*").order("arrival_time"),
       supabase.from("buses").select("*").order("code"),
       supabase.from("bus_trips").select("*").order("departure_time"),
     ]);
     setUsers((u.data || []) as Profile[]);
     setRoutes((r.data || []) as Route[]);
     setStops((s.data || []) as Stop[]);
+    setStopTimes((st.data || []) as StopTime[]);
     setBuses((b.data || []) as Bus[]);
     setTrips((t.data || []) as Trip[]);
   }
@@ -163,6 +172,19 @@ export default function AdminDashboard({ profile }: { profile: Profile }) {
       .eq("id", u.id);
     load();
   }
+  async function removeStudent(u: Profile) {
+    if (u.user_id === profile.user_id)
+      return ok("لا يمكن حذف حساب الأدمن الذي تستخدمه الآن");
+    if (!confirm(`حذف ${u.full_name} ومنعه من دخول النظام؟`)) return;
+    const { error } = await supabase
+      .from("user_directory")
+      .delete()
+      .eq("id", u.id);
+    if (error) return ok(error.message);
+    if (selected?.id === u.id) setSelected(null);
+    ok("تم حذف الطالب من النظام");
+    load();
+  }
   async function addRoute(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -182,7 +204,7 @@ export default function AdminDashboard({ profile }: { profile: Profile }) {
   async function addStop(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    const { error } = await supabase
+    const { data: added, error } = await supabase
       .from("bus_stops")
       .insert({
         route_id: Number(f.get("route")),
@@ -192,26 +214,43 @@ export default function AdminDashboard({ profile }: { profile: Profile }) {
         arrival_time: f.get("arrival") || null,
         latitude: f.get("latitude") ? Number(f.get("latitude")) : null,
         longitude: f.get("longitude") ? Number(f.get("longitude")) : null,
-      });
+      })
+      .select("id")
+      .single();
     if (error) return ok(error.message);
+    if (f.get("arrival") && added) {
+      const { error: timeError } = await supabase.from("stop_times").insert({
+        stop_id: added.id,
+        arrival_time: f.get("arrival"),
+      });
+      if (timeError) return ok(timeError.message);
+    }
     e.currentTarget.reset();
     ok("تمت إضافة المحطة ووقتها");
     load();
   }
-  async function updateStopTime(stop: Stop) {
-    const value = prompt(
-      `وقت وجود الباص في ${stop.name} (مثال 13:30 وسيظهر 1:30 م)`,
-      stop.arrival_time?.slice(0, 5) || "",
-    );
-    if (value === null) return;
+  async function updateStopLocation(stop: Stop) {
     const place = prompt(`موقع أو معلم محطة ${stop.name}`, stop.landmark || "");
     if (place === null) return;
     const { error } = await supabase
       .from("bus_stops")
-      .update({ arrival_time: value || null, landmark: place })
+      .update({ landmark: place })
       .eq("id", stop.id);
     if (error) return ok(error.message);
-    ok("تم تحديث وقت وموقع المحطة");
+    ok("تم تحديث موقع المحطة");
+    load();
+  }
+  async function addStopTime(stop: Stop) {
+    const value = prompt(
+      `أدخل وقتًا جديدًا لمحطة ${stop.name} (مثال 13:30)`,
+      "",
+    );
+    if (!value) return;
+    const { error } = await supabase
+      .from("stop_times")
+      .insert({ stop_id: stop.id, arrival_time: value });
+    if (error) return ok(error.message);
+    ok("تمت إضافة الوقت");
     load();
   }
   async function addBus(e: FormEvent<HTMLFormElement>) {
@@ -407,12 +446,20 @@ export default function AdminDashboard({ profile }: { profile: Profile }) {
                         فتح الملف
                       </button>
                       {u.user_id !== profile.user_id && (
-                        <button
-                          className="table-action"
-                          onClick={() => status(u)}
-                        >
-                          {u.status === "active" ? "إيقاف" : "تفعيل"}
-                        </button>
+                        <>
+                          <button
+                            className="table-action"
+                            onClick={() => status(u)}
+                          >
+                            {u.status === "active" ? "إيقاف" : "تفعيل"}
+                          </button>
+                          <button
+                            className="table-delete"
+                            onClick={() => removeStudent(u)}
+                          >
+                            حذف
+                          </button>
+                        </>
                       )}
                     </td>
                   </tr>
@@ -665,16 +712,34 @@ export default function AdminDashboard({ profile }: { profile: Profile }) {
                 <span>
                   <b>{s.name}</b>
                   <small>
-                    {s.landmark} · وقت الباص{" "}
-                    {tm(s.arrival_time || "") || "غير محدد"}
+                    {s.landmark || "لا يوجد وصف للموقع"}
                   </small>
+                  <span className="stop-time-chips">
+                    {stopTimes
+                      .filter((x) => x.stop_id === s.id)
+                      .map((x) => (
+                        <button
+                          key={x.id}
+                          title="حذف الوقت"
+                          onClick={() => del("stop_times", x.id)}
+                        >
+                          {tm(x.arrival_time)} ×
+                        </button>
+                      ))}
+                  </span>
                 </span>
                 <span className="entity-actions">
                   <button
                     className="location-edit"
-                    onClick={() => updateStopTime(s)}
+                    onClick={() => addStopTime(s)}
                   >
-                      تعديل الوقت والموقع
+                    + إضافة وقت
+                  </button>
+                  <button
+                    className="location-edit"
+                    onClick={() => updateStopLocation(s)}
+                  >
+                    تعديل الموقع
                   </button>
                   <button onClick={() => del("bus_stops", s.id)}>حذف</button>
                 </span>

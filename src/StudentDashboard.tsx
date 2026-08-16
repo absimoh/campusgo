@@ -18,6 +18,11 @@ type Stop = {
   latitude: number | null;
   longitude: number | null;
 };
+type StopTime = {
+  id: number;
+  stop_id: number;
+  arrival_time: string;
+};
 type Trip = {
   id: number;
   bus_code: string;
@@ -62,12 +67,13 @@ const minutesUntil = (time: string | null) => {
 export default function StudentDashboard({ profile }: { profile: Profile }) {
   const [lectures, setLectures] = useState<Lecture[]>([]),
     [stops, setStops] = useState<Stop[]>([]),
+    [stopTimes, setStopTimes] = useState<StopTime[]>([]),
     [trips, setTrips] = useState<Trip[]>([]),
     [position, setPosition] = useState<Point | null>(null),
     [locating, setLocating] = useState(false),
     [msg, setMsg] = useState("");
   async function load() {
-    const [l, s, t] = await Promise.all([
+    const [l, s, st, t] = await Promise.all([
       supabase
         .from("lectures")
         .select("*")
@@ -79,6 +85,11 @@ export default function StudentDashboard({ profile }: { profile: Profile }) {
         .select("id,name,landmark,stop_order,arrival_time,latitude,longitude")
         .order("stop_order"),
       supabase
+        .from("stop_times")
+        .select("id,stop_id,arrival_time")
+        .eq("active", true)
+        .order("arrival_time"),
+      supabase
         .from("bus_trips")
         .select("id,bus_code,route_name,departure_time")
         .in("route_name", ["باص التدريب", "باص كلية الرياضة"])
@@ -87,6 +98,7 @@ export default function StudentDashboard({ profile }: { profile: Profile }) {
     ]);
     setLectures((l.data || []) as Lecture[]);
     setStops((s.data || []) as Stop[]);
+    setStopTimes((st.data || []) as StopTime[]);
     setTrips((t.data || []) as Trip[]);
   }
   useEffect(() => {
@@ -107,8 +119,17 @@ export default function StudentDashboard({ profile }: { profile: Profile }) {
         .sort((a, b) => a.distance - b.distance)[0] || null
     );
   }, [position, stops]);
+  const timesFor = (stopId: number) =>
+    stopTimes.filter((x) => x.stop_id === stopId);
+  const nearestNextTime = nearest
+    ? timesFor(nearest.id).sort(
+        (a, b) =>
+          (minutesUntil(a.arrival_time) ?? Infinity) -
+          (minutesUntil(b.arrival_time) ?? Infinity),
+      )[0]?.arrival_time || null
+    : null;
   const nextLecture = lectures[0],
-    eta = minutesUntil(nearest?.arrival_time || null);
+    eta = minutesUntil(nearestNextTime);
   function locate() {
     if (!navigator.geolocation) return setMsg("تحديد الموقع غير مدعوم");
     setLocating(true);
@@ -196,7 +217,7 @@ export default function StudentDashboard({ profile }: { profile: Profile }) {
           </div>
           <p>
             {nearest
-              ? `إلى موقف ${nearest.name} · وقت وجود الباص ${tm(nearest.arrival_time)}`
+              ? `إلى موقف ${nearest.name} · الموعد القادم ${tm(nearestNextTime)}`
               : "اضغط «تحديد أقرب موقف» لمعرفة المسافة ووقت وصول الباص"}
           </p>
           <div className="route-dots">
@@ -207,9 +228,35 @@ export default function StudentDashboard({ profile }: { profile: Profile }) {
               >
                 <i />
                 {s.name}
-                <small>{tm(s.arrival_time)}</small>
+                <small>
+                  {timesFor(s.id)
+                    .slice(0, 3)
+                    .map((x) => tm(x.arrival_time))
+                    .join(" · ") || "لا توجد مواعيد"}
+                </small>
                 {i < stops.length - 1 && <em />}
               </span>
+            ))}
+          </div>
+        </section>
+        <section className="station-times student-card">
+          <div className="student-section-title">
+            <div>
+              <span>الجدول اليومي</span>
+              <h2>مواعيد الباص في المحطات</h2>
+            </div>
+          </div>
+          <div className="station-times-grid">
+            {stops.map((stop) => (
+              <article key={stop.id}>
+                <b>{stop.name}</b>
+                <small>{stop.landmark}</small>
+                <div>
+                  {timesFor(stop.id).map((x) => (
+                    <time key={x.id}>{tm(x.arrival_time)}</time>
+                  ))}
+                </div>
+              </article>
             ))}
           </div>
         </section>
